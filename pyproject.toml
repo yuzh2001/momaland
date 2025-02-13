@@ -79,6 +79,16 @@ all = [
     "matplotlib >=3.7.4",
     "morl_baselines[all]",
     "pycddlib==2.1.6",
+    "jax[cuda12]",
+    "wandb",
+    "moviepy",
+    "pettingzoo[sisl]"
+]
+train = [
+    "jax[cuda12]",
+    "wandb",
+    "moviepy",
+    "pettingzoo[sisl]"
 ]
 testing = ["pytest ==7.1.3"]
 

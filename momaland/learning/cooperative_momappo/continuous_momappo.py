@@ -17,16 +17,16 @@ import jax.numpy as jnp
 import morl_baselines.common.weights
 import numpy as np
 import optax
-import wandb
 from distrax import MultivariateNormalDiag
 from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 from jax import vmap
 from morl_baselines.common.evaluation import log_all_multi_policy_metrics
 from morl_baselines.multi_policy.linear_support.linear_support import LinearSupport
-from supersuit import agent_indicator_v0, clip_actions_v0, normalize_obs_v0
+from supersuit import agent_indicator_v0, clip_actions_v0
 from tqdm import tqdm
 
+import wandb
 from momaland.learning.cooperative_momappo.utils import policy_evaluation_mo, save_actor
 from momaland.learning.utils import autotag
 from momaland.utils.all_modules import all_environments
@@ -120,14 +120,26 @@ class Actor(nn.Module):
         else:
             activation = nn.tanh
 
-        actor_mean = nn.Dense(self.net_arch[0], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(local_obs_and_id)
+        actor_mean = nn.Dense(
+            self.net_arch[0],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(local_obs_and_id)
         actor_mean = activation(actor_mean)
         for i in range(1, len(self.net_arch)):
-            actor_mean = nn.Dense(self.net_arch[i], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(actor_mean)
+            actor_mean = nn.Dense(
+                self.net_arch[i],
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )(actor_mean)
             actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(actor_mean)
+        actor_mean = nn.Dense(
+            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
+        )(actor_mean)
         actor_logtstd = self.param("log_std", nn.initializers.zeros, (self.action_dim,))
-        pi: MultivariateNormalDiag = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(actor_logtstd))
+        pi: MultivariateNormalDiag = distrax.MultivariateNormalDiag(
+            actor_mean, jnp.exp(actor_logtstd)
+        )
 
         return pi
 
@@ -146,12 +158,22 @@ class Critic(nn.Module):
         else:
             activation = nn.tanh
 
-        critic = nn.Dense(self.net_arch[0], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(global_obs)
+        critic = nn.Dense(
+            self.net_arch[0],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(global_obs)
         critic = activation(critic)
         for i in range(1, len(self.net_arch)):
-            critic = nn.Dense(self.net_arch[i], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(critic)
+            critic = nn.Dense(
+                self.net_arch[i],
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )(critic)
             critic = activation(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
+        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
+            critic
+        )
 
         return jnp.squeeze(critic, axis=-1)
 
@@ -172,7 +194,14 @@ class Transition(NamedTuple):
 class Buffer:
     """A numpy buffer to accumulate the samples, normally faster than jax based because mutable."""
 
-    def __init__(self, batch_size: int, joint_actions_shape, obs_shape, global_obs_shape, num_agents):
+    def __init__(
+        self,
+        batch_size: int,
+        joint_actions_shape,
+        obs_shape,
+        global_obs_shape,
+        num_agents,
+    ):
         """Buffer initialization to keep track of data between episodes."""
         self.batch_size = batch_size
         self.joint_actions = np.zeros((batch_size, *joint_actions_shape))
@@ -237,14 +266,18 @@ def _batched_ma_get_pi(params, obs: jnp.ndarray):
 
 
 @jax.jit
-def _ma_sample_and_log_prob_from_pi(pi: List[MultivariateNormalDiag], key: chex.PRNGKey):
+def _ma_sample_and_log_prob_from_pi(
+    pi: List[MultivariateNormalDiag], key: chex.PRNGKey
+):
     """Samples actions for all agents in all the envs at once. This is done with a for loop because distrax does not like vmapping.
 
     Args:
         pi (List[MultivariateNormalDiag]): List of distrax distributions for agent actions (batched over envs).
         key (chex.PRNGKey): PRNGKey to use for sampling: size should be (num_agents, 2).
     """
-    return [pi[i].sample_and_log_prob(seed=key[i]) for i in range(len(env.possible_agents))]
+    return [
+        pi[i].sample_and_log_prob(seed=key[i]) for i in range(len(env.possible_agents))
+    ]
 
 
 @jax.jit
@@ -283,15 +316,24 @@ def _update_minbatch(actor_critic_train_state, batch_info):
         )  # this is a list of distributions with batch_shape of minibatch_size and event shape of action_dim
         new_value = vmapped_get_value(critic_params, traj_batch.global_obs)
         # MA Log Prob: shape (len(env.possible_agents), minibatch_size)
-        new_log_probs = jnp.array([pi[i].log_prob(traj_batch.joint_actions[:, i, :]) for i in range(len(env.possible_agents))])
-        new_log_probs = new_log_probs.transpose()  # (minibatch_size, len(env.possible_agents))
+        new_log_probs = jnp.array(
+            [
+                pi[i].log_prob(traj_batch.joint_actions[:, i, :])
+                for i in range(len(env.possible_agents))
+            ]
+        )
+        new_log_probs = (
+            new_log_probs.transpose()
+        )  # (minibatch_size, len(env.possible_agents))
 
         # Normalizes advantage (trick)
         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
         gae = gae.reshape((-1, 1))  # (minibatch_size, 1)
 
         # CALCULATE VALUE LOSS
-        value_pred_clipped = traj_batch.value + (new_value - traj_batch.value).clip(-args.clip_eps, args.clip_eps)
+        value_pred_clipped = traj_batch.value + (new_value - traj_batch.value).clip(
+            -args.clip_eps, args.clip_eps
+        )
         value_losses = jnp.square(new_value - targets)
         value_losses_clipped = jnp.square(value_pred_clipped - targets)
         value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
@@ -302,7 +344,9 @@ def _update_minbatch(actor_critic_train_state, batch_info):
         approx_kl = ((ratio - 1) - logratio).mean()
         loss_actor1 = -ratio * gae
         loss_actor2 = -jnp.clip(ratio, 1.0 - args.clip_eps, 1.0 + args.clip_eps) * gae
-        loss_per_agent = jnp.maximum(loss_actor1, loss_actor2).mean(0)  # mean across minibatch
+        loss_per_agent = jnp.maximum(loss_actor1, loss_actor2).mean(
+            0
+        )  # mean across minibatch
         loss_actors = jnp.sum(loss_per_agent)  # sum across agents
 
         entropies = jnp.array([p.entropy().mean() for p in pi])
@@ -312,7 +356,13 @@ def _update_minbatch(actor_critic_train_state, batch_info):
         return total_loss, (value_loss, loss_actors, entropy, approx_kl)
 
     grad_fn = jax.value_and_grad(_loss_fn, argnums=(0, 1), has_aux=True)
-    total_loss_and_debug, grads = grad_fn(actor_train_state.params, critic_train_state.params, traj_batch, advantages, targets)
+    total_loss_and_debug, grads = grad_fn(
+        actor_train_state.params,
+        critic_train_state.params,
+        traj_batch,
+        advantages,
+        targets,
+    )
     actor_train_state = actor_train_state.apply_gradients(grads=grads[0])
     critic_train_state = critic_train_state.apply_gradients(grads=grads[1])
     return (actor_train_state, critic_train_state), total_loss_and_debug
@@ -320,15 +370,21 @@ def _update_minbatch(actor_critic_train_state, batch_info):
 
 @jax.jit
 def _update_epoch(update_state, unused):
-    actor_train_state, critic_train_state, traj_batch, advantages, targets, key = update_state
+    actor_train_state, critic_train_state, traj_batch, advantages, targets, key = (
+        update_state
+    )
     key, subkey = jax.random.split(key)
     batch_size = minibatch_size * args.num_minibatches
     permutation = jax.random.permutation(subkey, batch_size)
     batch = (traj_batch, advantages, targets)
     # flattens the num_steps_per_epoch dimensions into batch_size; keeps the other dimensions untouched (len(env.possible_agents), obs_dim, ...)
-    batch = jax.tree_util.tree_map(lambda x: x.reshape((batch_size,) + x.shape[1:]), batch)
+    batch = jax.tree_util.tree_map(
+        lambda x: x.reshape((batch_size,) + x.shape[1:]), batch
+    )
     # shuffles the full batch using permutations
-    shuffled_batch = jax.tree_util.tree_map(lambda x: jnp.take(x, permutation, axis=0), batch)
+    shuffled_batch = jax.tree_util.tree_map(
+        lambda x: jnp.take(x, permutation, axis=0), batch
+    )
     # Slices the shuffled batch into num_minibatches
     minibatches = jax.tree_util.tree_map(
         lambda x: jnp.reshape(x, [args.num_minibatches, -1] + list(x.shape[1:])),
@@ -337,7 +393,14 @@ def _update_epoch(update_state, unused):
     actor_critic_state, total_loss_and_debug = jax.lax.scan(
         _update_minbatch, (actor_train_state, critic_train_state), minibatches
     )
-    update_state = (actor_critic_state[0], actor_critic_state[1], traj_batch, advantages, targets, key)
+    update_state = (
+        actor_critic_state[0],
+        actor_critic_state[1],
+        traj_batch,
+        advantages,
+        targets,
+        key,
+    )
     return update_state, total_loss_and_debug
 
 
@@ -348,11 +411,13 @@ def train(args, env, weights: np.ndarray, key: chex.PRNGKey):
     minibatch_size = int(args.num_steps_per_epoch // args.num_minibatches)
 
     def linear_schedule(count):
-        frac = 1.0 - (count // (args.num_minibatches * args.update_epochs)) / num_updates
+        frac = (
+            1.0 - (count // (args.num_minibatches * args.update_epochs)) / num_updates
+        )
         return args.lr * frac
 
     env = clip_actions_v0(env)
-    env = normalize_obs_v0(env, env_min=-1.0, env_max=1.0)
+    # env = normalize_obs_v0(env, env_min=-1.0, env_max=1.0)
     env = agent_indicator_v0(env)
     for agent in env.possible_agents:
         for idx in range(env.unwrapped.reward_space(agent).shape[0]):
@@ -446,7 +511,8 @@ def train(args, env, weights: np.ndarray, key: chex.PRNGKey):
 
             reward = np.array(list(rewards.values())).sum(axis=-1)  # team reward
             terminated = np.logical_or(
-                np.any(np.array(list(terminateds.values())), axis=-1), np.any(np.array(list(truncateds.values())), axis=-1)
+                np.any(np.array(list(terminateds.values())), axis=-1),
+                np.any(np.array(list(truncateds.values())), axis=-1),
             )  # TODO handle truncations
 
             buffer.add(
@@ -463,12 +529,16 @@ def train(args, env, weights: np.ndarray, key: chex.PRNGKey):
             if terminated:
                 team_return = sum(list(info["episode"]["r"].values()))
                 if args.debug:
-                    print(f"Episode return: ${team_return}, length: ${info['episode']['l']}")
+                    print(
+                        f"Episode return: ${team_return}, length: ${info['episode']['l']}"
+                    )
                 if args.track:
                     wandb.log(
                         {
                             f"charts_{weights}/episode_return": team_return,
-                            f"charts_{weights}/episode_length": info["episode"]["l"][env.possible_agents[0]],
+                            f"charts_{weights}/episode_length": info["episode"]["l"][
+                                env.possible_agents[0]
+                            ],
                             "global_step": current_timestep,
                         }
                     )
@@ -490,8 +560,17 @@ def train(args, env, weights: np.ndarray, key: chex.PRNGKey):
         advantages, targets = _calculate_gae(traj_batch, last_val)
 
         # UPDATE NETWORK
-        update_state = (actor_train_state, critic_train_state, traj_batch, advantages, targets, key)
-        update_state, loss_info = jax.lax.scan(_update_epoch, update_state, None, args.update_epochs)
+        update_state = (
+            actor_train_state,
+            critic_train_state,
+            traj_batch,
+            advantages,
+            targets,
+            key,
+        )
+        update_state, loss_info = jax.lax.scan(
+            _update_epoch, update_state, None, args.update_epochs
+        )
 
         # Updates the train states (don't forget)
         actor_train_state = update_state[0]
@@ -542,7 +621,7 @@ if __name__ == "__main__":
     env: ParallelEnv = env_constructor()
     eval_env: ParallelEnv = env_constructor()
     eval_env = clip_actions_v0(eval_env)
-    eval_env = normalize_obs_v0(eval_env, env_min=-1.0, env_max=1.0)
+    # eval_env = normalize_obs_v0(eval_env, env_min=-1.0, env_max=1.0)
     eval_env = agent_indicator_v0(eval_env)
 
     env.reset(seed=args.seed)
@@ -552,7 +631,11 @@ if __name__ == "__main__":
 
     # NN initialization and jit compiled functions
     single_action_space = env.action_space(env.possible_agents[0])
-    actor = Actor(single_action_space.shape[0], net_arch=args.actor_net_arch, activation=args.activation)
+    actor = Actor(
+        single_action_space.shape[0],
+        net_arch=args.actor_net_arch,
+        activation=args.activation,
+    )
     critic = Critic(net_arch=args.critic_net_arch, activation=args.activation)
     vmapped_get_value = vmap(critic.apply, in_axes=(None, 0))
     critic.apply = jax.jit(critic.apply)
@@ -564,7 +647,7 @@ if __name__ == "__main__":
         run_name = f"{args.env_id}__{exp_name}({args.weights_generation})__{args.seed}__{int(time.time())}"
         wandb.init(
             project=args.wandb_project,
-            entity=args.wandb_entity,
+            # entity=args.wandb_entity,
             config=args_dict,
             name=run_name,
             save_code=True,
@@ -576,15 +659,23 @@ if __name__ == "__main__":
     if args.weights_generation == "OLS":
         w = ols.next_weight()
     elif args.weights_generation == "uniform":
-        all_weights = morl_baselines.common.weights.equally_spaced_weights(reward_dim, args.num_weights)
+        all_weights = morl_baselines.common.weights.equally_spaced_weights(
+            reward_dim, args.num_weights
+        )
         w = all_weights[weight_number - 1]
     else:
         raise ValueError("Weights generation method not recognized")
-    while (args.weights_generation != "OLS" or not ols.ended()) and weight_number <= args.num_weights:
+    while (
+        args.weights_generation != "OLS" or not ols.ended()
+    ) and weight_number <= args.num_weights:
         out = train(args, env, w, rng)
         actor_state = out["runner_state"][0]
         _, disc_vec_return = policy_evaluation_mo(
-            actor, actor_state, env=eval_env, num_obj=ols.num_objectives, gamma=args.gamma
+            actor,
+            actor_state,
+            env=eval_env,
+            num_obj=ols.num_objectives,
+            gamma=args.gamma,
         )
         value.append(disc_vec_return)
         print(f"Weight {weight_number}/{args.num_weights} done!")

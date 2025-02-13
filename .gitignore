@@ -139,3 +139,6 @@ dmypy.json
 
 # Mac
 .DS_Store
+
+# Logging
+wandb/
