@@ -1,0 +1,1 @@
+uv run python momaland/learning/cooperative_momappo/continuous_momappo.py --env-id=momultiwalker_stability_v0 --save-policies=True --track=True --wandb-project=moma --num-weights=20 --weights-generation=uniform --timesteps-per-weight=500000 --ref-point -300 -300
