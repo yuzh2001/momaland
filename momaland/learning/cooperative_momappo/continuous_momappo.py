@@ -547,9 +547,14 @@ def train(args, env, weights: np.ndarray, key: chex.PRNGKey):
             runner_state = (actor_state, critic_state, obs, key)
             return runner_state
 
+        start_time = time.time()
         for _ in range(args.num_steps_per_epoch):
             runner_state = _env_step(runner_state)
+        step_time = time.time() - start_time
+        if args.track:
+            wandb.log({"timing/collection": step_time, "global_step": current_timestep})
 
+        start_time = time.time()
         # CALCULATE ADVANTAGE
         actor_train_state, critic_train_state, obs, key = runner_state
         global_obs = env.state()
@@ -571,6 +576,11 @@ def train(args, env, weights: np.ndarray, key: chex.PRNGKey):
         update_state, loss_info = jax.lax.scan(
             _update_epoch, update_state, None, args.update_epochs
         )
+        update_time = time.time() - start_time
+        if args.track:
+            wandb.log(
+                {"timing/network_update": update_time, "global_step": current_timestep}
+            )
 
         # Updates the train states (don't forget)
         actor_train_state = update_state[0]
